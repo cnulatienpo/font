@@ -1,7 +1,7 @@
 // FontMetadataForm.tsx
 // Small form for entering font metadata before building.
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 
 type FontMetadata = {
   fontName: string;
@@ -20,16 +20,16 @@ export default function FontMetadataForm({ onChange }: { onChange: (meta: FontMe
   const [descender, setDescender] = useState(-200);
   const [padding, setPadding] = useState(50);
 
-  function emit() {
+  useEffect(() => {
     onChange({
       fontName,
       styleName,
       unitsPerEm,
       ascender,
       descender,
-      padding
+      padding,
     });
-  }
+  }, [fontName, styleName, unitsPerEm, ascender, descender, padding, onChange]);
 
   return (
     <div
@@ -93,16 +93,6 @@ export default function FontMetadataForm({ onChange }: { onChange: (meta: FontMe
         style={{ width: "100%", marginBottom: "0.5rem" }}
       />
 
-      <button
-        onClick={emit}
-        style={{
-          marginTop: "0.5rem",
-          padding: "0.5rem 1rem",
-          fontWeight: 700
-        }}
-      >
-        update
-      </button>
     </div>
   );
 }
