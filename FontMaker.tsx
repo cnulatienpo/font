@@ -171,27 +171,66 @@ function kerningKey(left: string, right: string) {
 }
 
 export default function FontMaker() {
-  const [glyphs, setGlyphs] = useState<Record<string, GlyphData>>(createDefaultGlyphs);
+  // Load from localStorage or use defaults
+  const loadState = () => {
+    try {
+      const saved = localStorage.getItem('fontMakerState');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          glyphs: parsed.glyphs || createDefaultGlyphs(),
+          metadata: parsed.metadata,
+          kerningPairs: parsed.kerningPairs || {},
+        };
+      }
+    } catch (e) {
+      console.error('Failed to load state:', e);
+    }
+    return null;
+  };
+
+  const initialState = loadState();
+  
+  const [glyphs, setGlyphs] = useState<Record<string, GlyphData>>(
+    initialState?.glyphs || createDefaultGlyphs()
+  );
   const [selectedGlyph, setSelectedGlyph] = useState<string>(GLYPHS[0]);
   const [previewText, setPreviewText] = useState<string>("Font Maker Live Preview");
   const [baseline, setBaseline] = useState(320);
   const [capHeight, setCapHeight] = useState(180);
   const [descender, setDescender] = useState(420);
-  const [kerningPairs, setKerningPairs] = useState<Record<string, number>>({});
+  const [kerningPairs, setKerningPairs] = useState<Record<string, number>>(
+    initialState?.kerningPairs || {}
+  );
   const [kerningLeft, setKerningLeft] = useState<string>("A");
   const [kerningRight, setKerningRight] = useState<string>("V");
   const [kerningValue, setKerningValue] = useState<number>(0);
-  const [metadata, setMetadata] = useState<FontMetadata>({
-    fontName: "MyFont",
-    styleName: "Regular",
-    unitsPerEm: 1000,
-    ascender: 800,
-    descender: -200,
-    padding: 50,
-  });
+  const [metadata, setMetadata] = useState<FontMetadata>(
+    initialState?.metadata || {
+      fontName: "MyFont",
+      styleName: "Regular",
+      unitsPerEm: 1000,
+      ascender: 800,
+      descender: -200,
+      padding: 50,
+    }
+  );
   const [status, setStatus] = useState<string>("");
 
   const activeGlyph = glyphs[selectedGlyph];
+
+  // Auto-save to localStorage whenever glyphs, metadata, or kerning changes
+  useEffect(() => {
+    try {
+      localStorage.setItem('fontMakerState', JSON.stringify({
+        glyphs,
+        metadata,
+        kerningPairs,
+      }));
+    } catch (e) {
+      console.error('Failed to save state:', e);
+    }
+  }, [glyphs, metadata, kerningPairs]);
 
   useEffect(() => {
     setStatus("");
@@ -271,7 +310,8 @@ export default function FontMaker() {
       const kern = idx > 0 ? kerningValueForPreview(last, char) : 0;
       last = char;
       const advance = glyph?.advance ?? 500;
-      const spacing = Math.max(advance, 1);
+      // Scale down the advance for preview (divide by 5 for better visibility)
+      const spacing = Math.max(advance / 5, 20);
 
       if (glyph?.svg) {
         nodes.push(
@@ -280,7 +320,7 @@ export default function FontMaker() {
             style={{
               display: "inline-block",
               width: spacing,
-              marginLeft: idx > 0 ? kern : 0,
+              marginLeft: idx > 0 ? kern / 5 : 0,
               position: "relative",
               color: "#fff",
               height: 120,
@@ -296,11 +336,15 @@ export default function FontMaker() {
                 display: "flex",
                 alignItems: "flex-end",
                 justifyContent: "center",
-                transform: `translate(${glyph.x}px, ${glyph.y}px) scale(${glyph.scale}) rotate(${glyph.rotate}deg)`,
+                transform: `translate(${glyph.x / 5}px, ${glyph.y / 5}px) scale(${glyph.scale}) rotate(${glyph.rotate}deg)`,
                 transformOrigin: "center bottom",
               }}
-              dangerouslySetInnerHTML={{ __html: glyph.svg }}
-            />
+            >
+              <div
+                style={{ width: "100%", height: "100%", color: "#fff" }}
+                dangerouslySetInnerHTML={{ __html: glyph.svg.replace(/<svg/, '<svg preserveAspectRatio="xMidYMid meet" style="width: 100%; height: 100%;"') }}
+              />
+            </div>
           </span>
         );
       } else {
@@ -573,25 +617,58 @@ export default function FontMaker() {
             }}
           >
             {activeGlyph.svg ? (
-              <div
-                style={{
-                  maxWidth: "80%",
-                  maxHeight: "80%",
-                  overflow: "hidden",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
+              <>
                 <div
                   style={{
-                    transform: `translate(${activeGlyph.x}px, ${activeGlyph.y}px) scale(${activeGlyph.scale}) rotate(${activeGlyph.rotate}deg)`,
-                    transformOrigin: "center center",
-                    color: "white",
+                    maxWidth: "80%",
+                    maxHeight: "80%",
+                    overflow: "visible",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
                   }}
-                  dangerouslySetInnerHTML={{ __html: activeGlyph.svg }}
-                />
-              </div>
+                >
+                  <div
+                    style={{
+                      transform: `translate(${activeGlyph.x}px, ${activeGlyph.y}px) scale(${activeGlyph.scale}) rotate(${activeGlyph.rotate}deg)`,
+                      transformOrigin: "center center",
+                      lineHeight: 0,
+                      width: "500px",
+                      height: "500px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <div
+                      style={{ 
+                        color: "white", 
+                        display: "inline-block",
+                        width: "100%",
+                        height: "100%",
+                      }}
+                      dangerouslySetInnerHTML={{ __html: activeGlyph.svg.replace(/<svg/, '<svg style="width: 100%; height: 100%;"') }}
+                    />
+                  </div>
+                </div>
+                <div style={{ 
+                  position: "absolute", 
+                  top: 10, 
+                  left: 10, 
+                  background: "rgba(0,0,0,0.7)", 
+                  padding: 8,
+                  fontSize: 12,
+                  color: "#0f0",
+                  maxWidth: 200,
+                  maxHeight: 100,
+                  overflow: "auto",
+                  wordBreak: "break-all"
+                }}>
+                  SVG Length: {activeGlyph.svg.length} chars
+                  <br/>
+                  Preview: {activeGlyph.svg.substring(0, 50)}...
+                </div>
+              </>
             ) : (
               <div style={{ color: "#475569", fontSize: 18 }}>Upload artwork to begin editing.</div>
             )}

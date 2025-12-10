@@ -1,0 +1,74 @@
+# Font files and build outputs
+*.otf.woff
+*.otf.woff2
+*.ttf.woff
+*.ttf.woff2
+*.eot
+dist/
+build/
+
+# Font development tools
+*.vfb.bak
+*.vfb~
+*.sfd-
+*.ufo~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Uploads
+uploads/*
+!uploads/.gitkeep
+
+# Python (if using fontmake or similar)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+*.cache
+
+# Build and distribution
+*.zip
+*.tar.gz
+*.rar

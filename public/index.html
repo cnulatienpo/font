@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Font Builder</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        
+        .upload-area {
+            border: 3px dashed #667eea;
+            border-radius: 10px;
+            padding: 60px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 30px;
+        }
+        
+        .upload-area:hover {
+            background: #f8f9ff;
+            border-color: #764ba2;
+        }
+        
+        .upload-area input {
+            display: none;
+        }
+        
+        .preview-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+            gap: 15px;
+            margin-top: 30px;
+        }
+        
+        .preview-item {
+            position: relative;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 10px;
+            text-align: center;
+        }
+        
+        .preview-item img {
+            max-width: 100%;
+            height: auto;
+        }
+        
+        .preview-item button {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: #ff4757;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .build-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 18px;
+            border-radius: 10px;
+            cursor: pointer;
+            display: block;
+            margin: 30px auto 0;
+            font-weight: bold;
+            transition: transform 0.2s;
+        }
+        
+        .build-btn:hover {
+            transform: translateY(-2px);
+        }
+        
+        .build-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎨 Font Builder</h1>
+        
+        <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+            <input type="file" id="fileInput" accept="image/png" multiple>
+            <p style="font-size: 24px; margin-bottom: 10px;">📁</p>
+            <p style="font-size: 18px; color: #667eea;">Click to upload PNG files</p>
+            <p style="font-size: 14px; color: #999; margin-top: 10px;">or drag and drop</p>
+        </div>
+        
+        <div id="preview" class="preview-grid"></div>
+        
+        <button class="build-btn" id="buildBtn" disabled>Build Font</button>
+    </div>
+    
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const preview = document.getElementById('preview');
+        const buildBtn = document.getElementById('buildBtn');
+        let selectedFiles = [];
+        
+        fileInput.addEventListener('change', handleFiles);
+        
+        function handleFiles(e) {
+            const files = Array.from(e.target.files);
+            selectedFiles = [...selectedFiles, ...files];
+            updatePreview();
+        }
+        
+        function updatePreview() {
+            preview.innerHTML = '';
+            selectedFiles.forEach((file, index) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const div = document.createElement('div');
+                    div.className = 'preview-item';
+                    div.innerHTML = `
+                        <button onclick="removeFile(${index})">×</button>
+                        <img src="${e.target.result}" alt="${file.name}">
+                        <p style="font-size: 12px; margin-top: 5px; color: #666;">${file.name}</p>
+                    `;
+                    preview.appendChild(div);
+                };
+                reader.readAsDataURL(file);
+            });
+            
+            buildBtn.disabled = selectedFiles.length === 0;
+        }
+        
+        function removeFile(index) {
+            selectedFiles.splice(index, 1);
+            updatePreview();
+        }
+        
+        buildBtn.addEventListener('click', async () => {
+            const formData = new FormData();
+            selectedFiles.forEach(file => {
+                formData.append('images', file);
+            });
+            
+            try {
+                buildBtn.textContent = 'Building...';
+                buildBtn.disabled = true;
+                
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                alert('Files uploaded! Font building coming soon...');
+                console.log(result);
+                
+                buildBtn.textContent = 'Build Font';
+                buildBtn.disabled = false;
+            } catch (error) {
+                alert('Error: ' + error.message);
+                buildBtn.textContent = 'Build Font';
+                buildBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
