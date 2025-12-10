@@ -1,17 +1,30 @@
 import React, { useEffect, useMemo, useState } from "react";
-import GuideControls from "./GuideControls";
+import GuideControls, { GuideSet } from "./GuideControls";
 import GuideOverlay from "./GuideOverlay";
 import FontMetadataForm from "./FontMetadataForm";
 import { tracePNGtoSVG } from "./GlyphAutoTrace";
 import opentype from "opentype.js";
+import SpacingDebugger from "./SpacingDebugger";
+import FontSpacingTools from "./FontSpacingTools";
+import {
+  buildPathFromData,
+  computeBoundingBox,
+  extractPathData,
+  transformPath,
+} from "./GlyphMetrics";
 
-type GlyphData = {
+export type GlyphData = {
   svg: string | null;
   scale: number;
   rotate: number;
   x: number;
   y: number;
   advance: number;
+  leftBearing: number;
+  rightBearing: number;
+  lockCapHeight?: boolean;
+  lockXHeight?: boolean;
+  normalizeCenter?: boolean;
 };
 
 type FontMetadata = {
@@ -56,6 +69,18 @@ const PUNCTUATION = [
 
 const GLYPHS = [...UPPER, ...LOWER, ...DIGITS, ...PUNCTUATION];
 
+const DEFAULT_GUIDES: GuideSet = {
+  baseline: 820,
+  capHeight: 260,
+  xHeight: 440,
+  ascender: 180,
+  descender: 1120,
+  meanline: 520,
+  centerline: 600,
+  emTop: 120,
+  emBottom: 1220,
+};
+
 function createDefaultGlyphs(): Record<string, GlyphData> {
   return GLYPHS.reduce((acc, char) => {
     acc[char] = {
@@ -65,105 +90,11 @@ function createDefaultGlyphs(): Record<string, GlyphData> {
       x: 0,
       y: 0,
       advance: 600,
+      leftBearing: 100,
+      rightBearing: 100,
     };
     return acc;
   }, {} as Record<string, GlyphData>);
-}
-
-function extractPathData(svg: string): string[] {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(svg, "image/svg+xml");
-  const paths = Array.from(doc.querySelectorAll("path"));
-  const ds = paths
-    .map(p => p.getAttribute("d"))
-    .filter((d): d is string => Boolean(d));
-
-  if (ds.length === 0) {
-    const svgEl = doc.querySelector("svg");
-    const viewBox = svgEl?.getAttribute("viewBox")?.split(" ").map(Number);
-    if (svgEl) {
-      const width = Number(svgEl.getAttribute("width")) || viewBox?.[2] || 100;
-      const height = Number(svgEl.getAttribute("height")) || viewBox?.[3] || 100;
-      return [`M0 0 H${width} V${height} H0 Z`];
-    }
-  }
-  return ds;
-}
-
-function buildPathFromData(ds: string[]) {
-  const base = new opentype.Path();
-  ds.forEach(d => {
-    const p = opentype.Path.fromSVG(d);
-    p.commands.forEach(cmd => base.commands.push({ ...cmd } as any));
-  });
-  return base;
-}
-
-function transformPath(
-  path: opentype.Path,
-  glyph: GlyphData,
-  style: "Regular" | "Bold" | "Italic" | "BoldItalic"
-) {
-  const rad = (glyph.rotate * Math.PI) / 180;
-  const styleScale = style.includes("Bold") ? 1.12 : 1;
-  const italicShear = style.includes("Italic") ? Math.tan((12 * Math.PI) / 180) : 0;
-  const sx = glyph.scale * styleScale;
-  const sy = glyph.scale * styleScale;
-
-  const cos = Math.cos(rad);
-  const sin = Math.sin(rad);
-
-  const applyPoint = (x: number, y: number) => {
-    let nx = x * sx;
-    let ny = y * sy;
-    if (italicShear !== 0) {
-      nx = nx + ny * italicShear;
-    }
-    const rx = nx * cos - ny * sin;
-    const ry = nx * sin + ny * cos;
-    return { x: rx + glyph.x, y: ry + glyph.y };
-  };
-
-  const newPath = new opentype.Path();
-  path.commands.forEach(cmd => {
-    const newCmd: any = { ...cmd };
-    if ("x" in newCmd && "y" in newCmd) {
-      const p = applyPoint(newCmd.x, newCmd.y);
-      newCmd.x = p.x;
-      newCmd.y = p.y;
-    }
-    if ("x1" in newCmd && "y1" in newCmd) {
-      const p = applyPoint(newCmd.x1, newCmd.y1);
-      newCmd.x1 = p.x;
-      newCmd.y1 = p.y;
-    }
-    if ("x2" in newCmd && "y2" in newCmd) {
-      const p = applyPoint(newCmd.x2, newCmd.y2);
-      newCmd.x2 = p.x;
-      newCmd.y2 = p.y;
-    }
-    newPath.commands.push(newCmd);
-  });
-  return newPath;
-}
-
-function glyphToOpenType(
-  char: string,
-  glyph: GlyphData,
-  style: "Regular" | "Bold" | "Italic" | "BoldItalic"
-) {
-  if (!glyph.svg) return null;
-  const ds = extractPathData(glyph.svg);
-  const basePath = buildPathFromData(ds);
-  const transformed = transformPath(basePath, glyph, style);
-  const advanceWidth = glyph.advance * (style.includes("Bold") ? 1.08 : 1);
-
-  return new opentype.Glyph({
-    name: char,
-    unicode: char.codePointAt(0)!,
-    advanceWidth,
-    path: transformed,
-  });
 }
 
 function kerningKey(left: string, right: string) {
@@ -171,34 +102,34 @@ function kerningKey(left: string, right: string) {
 }
 
 export default function FontMaker() {
-  // Load from localStorage or use defaults
   const loadState = () => {
     try {
-      const saved = localStorage.getItem('fontMakerState');
+      const saved = localStorage.getItem("fontMakerState");
       if (saved) {
         const parsed = JSON.parse(saved);
         return {
           glyphs: parsed.glyphs || createDefaultGlyphs(),
           metadata: parsed.metadata,
           kerningPairs: parsed.kerningPairs || {},
+          guides: parsed.guides || DEFAULT_GUIDES,
+          letterSpacing: parsed.letterSpacing || 1,
+          tracking: parsed.tracking || 0,
         };
       }
     } catch (e) {
-      console.error('Failed to load state:', e);
+      console.error("Failed to load state:", e);
     }
     return null;
   };
 
   const initialState = loadState();
-  
+
   const [glyphs, setGlyphs] = useState<Record<string, GlyphData>>(
     initialState?.glyphs || createDefaultGlyphs()
   );
   const [selectedGlyph, setSelectedGlyph] = useState<string>(GLYPHS[0]);
   const [previewText, setPreviewText] = useState<string>("Font Maker Live Preview");
-  const [baseline, setBaseline] = useState(320);
-  const [capHeight, setCapHeight] = useState(180);
-  const [descender, setDescender] = useState(420);
+  const [guides, setGuides] = useState<GuideSet>(initialState?.guides || DEFAULT_GUIDES);
   const [kerningPairs, setKerningPairs] = useState<Record<string, number>>(
     initialState?.kerningPairs || {}
   );
@@ -209,32 +140,55 @@ export default function FontMaker() {
     initialState?.metadata || {
       fontName: "MyFont",
       styleName: "Regular",
-      unitsPerEm: 1000,
-      ascender: 800,
-      descender: -200,
+      unitsPerEm: guides.emBottom - guides.emTop,
+      ascender: guides.baseline - guides.emTop,
+      descender: guides.emBottom - guides.baseline,
       padding: 50,
     }
   );
   const [status, setStatus] = useState<string>("");
+  const [showSpacingDebug, setShowSpacingDebug] = useState<boolean>(false);
+  const [previewMode, setPreviewMode] = useState<
+    "typeset" | "monospace" | "grid" | "bounding"
+  >("typeset");
+  const [letterSpacing, setLetterSpacing] = useState<number>(initialState?.letterSpacing || 1);
+  const [tracking, setTracking] = useState<number>(initialState?.tracking || 0);
 
   const activeGlyph = glyphs[selectedGlyph];
 
-  // Auto-save to localStorage whenever glyphs, metadata, or kerning changes
   useEffect(() => {
     try {
-      localStorage.setItem('fontMakerState', JSON.stringify({
-        glyphs,
-        metadata,
-        kerningPairs,
-      }));
+      localStorage.setItem(
+        "fontMakerState",
+        JSON.stringify({
+          glyphs,
+          metadata,
+          kerningPairs,
+          guides,
+          letterSpacing,
+          tracking,
+        })
+      );
     } catch (e) {
-      console.error('Failed to save state:', e);
+      console.error("Failed to save state:", e);
     }
-  }, [glyphs, metadata, kerningPairs]);
+  }, [glyphs, metadata, kerningPairs, guides, letterSpacing, tracking]);
 
   useEffect(() => {
     setStatus("");
   }, [selectedGlyph]);
+
+  useEffect(() => {
+    const unitsPerEm = guides.emBottom - guides.emTop;
+    const ascender = guides.baseline - guides.emTop;
+    const descender = guides.emBottom - guides.baseline;
+    setMetadata(prev => ({
+      ...prev,
+      unitsPerEm,
+      ascender,
+      descender,
+    }));
+  }, [guides]);
 
   const kerningValueForPreview = (left: string, right: string) => {
     return kerningPairs[kerningKey(left, right)] || 0;
@@ -274,13 +228,63 @@ export default function FontMaker() {
     }));
   }
 
+  function glyphToOpenType(
+    char: string,
+    glyph: GlyphData,
+    style: "Regular" | "Bold" | "Italic" | "BoldItalic"
+  ) {
+    if (!glyph.svg) return null;
+    const ds = extractPathData(glyph.svg);
+    const basePath = buildPathFromData(ds);
+    const transformed = transformPath(basePath, glyph, style);
+    const bbox = transformed.getBoundingBox();
+    const glyphWidth = Math.max(bbox.x2 - bbox.x1, glyph.advance - glyph.leftBearing - glyph.rightBearing);
+    const advanceWidth = glyph.leftBearing + glyphWidth + glyph.rightBearing;
+    const advanceAdjusted = advanceWidth * (style.includes("Bold") ? 1.08 : 1);
+
+    return new opentype.Glyph({
+      name: char,
+      unicode: char.codePointAt(0)!,
+      advanceWidth: advanceAdjusted,
+      leftSideBearing: glyph.leftBearing,
+      xMin: bbox.x1,
+      xMax: bbox.x2,
+      yMin: bbox.y1,
+      yMax: bbox.y2,
+      path: transformed,
+    });
+  }
+
+  function applyLock(type: "cap" | "xHeight" | "center") {
+    const glyph = glyphs[selectedGlyph];
+    if (!glyph?.svg) return;
+    const bbox = computeBoundingBox(glyph.svg, glyph);
+    if (!bbox) return;
+    if (type === "cap") {
+      const targetHeight = guides.baseline - guides.capHeight;
+      const newScale = Math.max(0.01, (glyph.scale * targetHeight) / Math.max(bbox.height, 1));
+      const newY = guides.baseline - bbox.height;
+      updateGlyph({ scale: newScale, y: newY, lockCapHeight: true });
+    }
+    if (type === "xHeight") {
+      const targetHeight = guides.baseline - guides.xHeight;
+      const newScale = Math.max(0.01, (glyph.scale * targetHeight) / Math.max(bbox.height, 1));
+      const newY = guides.baseline - bbox.height;
+      updateGlyph({ scale: newScale, y: newY, lockXHeight: true });
+    }
+    if (type === "center") {
+      const center = (bbox.xMin + bbox.xMax) / 2;
+      updateGlyph({ x: glyph.x - center, normalizeCenter: true });
+    }
+  }
+
   function exportFont(style: "Regular" | "Bold" | "Italic" | "BoldItalic") {
     const font = new opentype.Font({
       familyName: metadata.fontName,
       styleName: style,
       unitsPerEm: metadata.unitsPerEm,
       ascender: metadata.ascender,
-      descender: metadata.descender,
+      descender: -Math.abs(metadata.descender),
     });
 
     GLYPHS.forEach(char => {
@@ -303,70 +307,18 @@ export default function FontMaker() {
   }
 
   const previewGlyphElements = useMemo(() => {
-    const nodes: React.ReactNode[] = [];
-    let last = "";
-    previewText.split("").forEach((char, idx) => {
-      const glyph = glyphs[char];
-      const kern = idx > 0 ? kerningValueForPreview(last, char) : 0;
-      last = char;
-      const advance = glyph?.advance ?? 500;
-      // Scale down the advance for preview (divide by 5 for better visibility)
-      const spacing = Math.max(advance / 5, 20);
-
-      if (glyph?.svg) {
-        nodes.push(
-          <span
-            key={`${char}-${idx}`}
-            style={{
-              display: "inline-block",
-              width: spacing,
-              marginLeft: idx > 0 ? kern / 5 : 0,
-              position: "relative",
-              color: "#fff",
-              height: 120,
-            }}
-          >
-            <div
-              style={{
-                position: "absolute",
-                left: 0,
-                right: 0,
-                top: 0,
-                bottom: 0,
-                display: "flex",
-                alignItems: "flex-end",
-                justifyContent: "center",
-                transform: `translate(${glyph.x / 5}px, ${glyph.y / 5}px) scale(${glyph.scale}) rotate(${glyph.rotate}deg)`,
-                transformOrigin: "center bottom",
-              }}
-            >
-              <div
-                style={{ width: "100%", height: "100%", color: "#fff" }}
-                dangerouslySetInnerHTML={{ __html: glyph.svg.replace(/<svg/, '<svg preserveAspectRatio="xMidYMid meet" style="width: 100%; height: 100%;"') }}
-              />
-            </div>
-          </span>
-        );
-      } else {
-        nodes.push(
-          <span
-            key={`${char}-${idx}`}
-            style={{
-              display: "inline-block",
-              width: spacing,
-              marginLeft: idx > 0 ? kern : 0,
-              color: "#888",
-              fontSize: 22,
-              textAlign: "center",
-            }}
-          >
-            {char}
-          </span>
-        );
-      }
-    });
-    return nodes;
-  }, [glyphs, previewText, kerningPairs]);
+    return (
+      <SpacingDebugger
+        previewText={previewText}
+        glyphs={glyphs}
+        kerningPairs={kerningPairs}
+        showDebug={showSpacingDebug}
+        previewMode={previewMode}
+        letterSpacingMultiplier={1}
+        tracking={0}
+      />
+    );
+  }, [glyphs, previewText, kerningPairs, showSpacingDebug, previewMode]);
 
   return (
     <div
@@ -500,10 +452,59 @@ export default function FontMaker() {
           <input
             type="range"
             min={100}
-            max={1200}
+            max={1600}
             value={activeGlyph.advance}
             onChange={e => updateGlyph({ advance: parseInt(e.target.value, 10) })}
           />
+        </div>
+
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ display: "block" }}>Left Bearing ({activeGlyph.leftBearing.toFixed(0)}px)</label>
+          <input
+            type="range"
+            min={0}
+            max={800}
+            value={activeGlyph.leftBearing}
+            onChange={e => updateGlyph({ leftBearing: parseInt(e.target.value, 10) })}
+          />
+        </div>
+
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ display: "block" }}>Right Bearing ({activeGlyph.rightBearing.toFixed(0)}px)</label>
+          <input
+            type="range"
+            min={0}
+            max={800}
+            value={activeGlyph.rightBearing}
+            onChange={e => updateGlyph({ rightBearing: parseInt(e.target.value, 10) })}
+          />
+        </div>
+
+        <div style={{ marginBottom: 12, display: "flex", flexDirection: "column", gap: 6 }}>
+          <label>
+            <input
+              type="checkbox"
+              checked={!!activeGlyph.lockCapHeight}
+              onChange={() => applyLock("cap")}
+            />
+            <span style={{ marginLeft: 6 }}>Lock cap height to guide</span>
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={!!activeGlyph.lockXHeight}
+              onChange={() => applyLock("xHeight")}
+            />
+            <span style={{ marginLeft: 6 }}>Lock x-height to guide</span>
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={!!activeGlyph.normalizeCenter}
+              onChange={() => applyLock("center")}
+            />
+            <span style={{ marginLeft: 6 }}>Normalize optical center</span>
+          </label>
         </div>
 
         <div style={{ marginTop: 12 }}>
@@ -525,7 +526,7 @@ export default function FontMaker() {
                 </option>
               ))}
             </select>
-            <span style={{ color: "#888" }}>with</span>
+            <span>with</span>
             <select value={kerningRight} onChange={e => setKerningRight(e.target.value)}>
               {GLYPHS.map(c => (
                 <option key={`kr-${c}`} value={c}>
@@ -534,7 +535,7 @@ export default function FontMaker() {
               ))}
             </select>
           </div>
-          <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <input
               type="range"
               min={-200}
@@ -544,44 +545,34 @@ export default function FontMaker() {
             />
             <span style={{ marginLeft: 8 }}>{kerningValue} px</span>
           </div>
-          <button
-            onClick={setKerningPair}
-            style={{ marginTop: 8, padding: "6px 10px", cursor: "pointer" }}
-          >
-            Apply Kerning Pair
+          <button style={{ marginTop: 6 }} onClick={setKerningPair}>
+            Set Kerning Pair
           </button>
         </div>
 
-        <GuideControls
-          baseline={baseline}
-          capHeight={capHeight}
-          descender={descender}
-          setBaseline={setBaseline}
-          setCapHeight={setCapHeight}
-          setDescender={setDescender}
+        <GuideControls guides={guides} onChange={patch => setGuides(prev => ({ ...prev, ...patch }))} />
+
+        <FontSpacingTools
+          glyphs={glyphs}
+          setGlyphs={setGlyphs}
+          letterSpacing={letterSpacing}
+          setLetterSpacing={setLetterSpacing}
+          tracking={tracking}
+          setTracking={setTracking}
         />
 
         <FontMetadataForm onChange={setMetadata} />
-
-        <div style={{ marginTop: 16, borderTop: "1px solid #1f2330", paddingTop: 10 }}>
+        <div style={{ marginTop: 12 }}>
           <div style={{ fontWeight: 700, marginBottom: 6 }}>Export</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
-            <button onClick={() => exportFont("Regular")} style={{ padding: 8 }}>
-              Export Regular
-            </button>
-            <button onClick={() => exportFont("Bold")} style={{ padding: 8 }}>
-              Export Bold
-            </button>
-            <button onClick={() => exportFont("Italic")} style={{ padding: 8 }}>
-              Export Italic
-            </button>
-            <button onClick={() => exportFont("BoldItalic")} style={{ padding: 8 }}>
-              Export BoldItalic
-            </button>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {(["Regular", "Bold", "Italic", "BoldItalic"] as const).map(style => (
+              <button key={style} onClick={() => exportFont(style)} style={{ padding: 8 }}>
+                Export {style}
+              </button>
+            ))}
           </div>
+          <div style={{ color: "#38bdf8", fontSize: 12, marginTop: 6 }}>{status}</div>
         </div>
-
-        {status && <div style={{ marginTop: 12, color: "#7dd3fc" }}>{status}</div>}
       </div>
 
       <div
@@ -605,7 +596,17 @@ export default function FontMaker() {
             border: "1px solid #1f2937",
           }}
         >
-          <GuideOverlay baseline={baseline} capHeight={capHeight} descender={descender} />
+          <GuideOverlay
+            baseline={guides.baseline}
+            capHeight={guides.capHeight}
+            xHeight={guides.xHeight}
+            ascender={guides.ascender}
+            descender={guides.descender}
+            meanline={guides.meanline}
+            centerline={guides.centerline}
+            emTop={guides.emTop}
+            emBottom={guides.emBottom}
+          />
           <div
             style={{
               position: "absolute",
@@ -641,31 +642,35 @@ export default function FontMaker() {
                     }}
                   >
                     <div
-                      style={{ 
-                        color: "white", 
+                      style={{
+                        color: "white",
                         display: "inline-block",
                         width: "100%",
                         height: "100%",
                       }}
-                      dangerouslySetInnerHTML={{ __html: activeGlyph.svg.replace(/<svg/, '<svg style="width: 100%; height: 100%;"') }}
+                      dangerouslySetInnerHTML={{
+                        __html: activeGlyph.svg.replace(/<svg/, '<svg style="width: 100%; height: 100%;"'),
+                      }}
                     />
                   </div>
                 </div>
-                <div style={{ 
-                  position: "absolute", 
-                  top: 10, 
-                  left: 10, 
-                  background: "rgba(0,0,0,0.7)", 
-                  padding: 8,
-                  fontSize: 12,
-                  color: "#0f0",
-                  maxWidth: 200,
-                  maxHeight: 100,
-                  overflow: "auto",
-                  wordBreak: "break-all"
-                }}>
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 10,
+                    left: 10,
+                    background: "rgba(0,0,0,0.7)",
+                    padding: 8,
+                    fontSize: 12,
+                    color: "#0f0",
+                    maxWidth: 200,
+                    maxHeight: 140,
+                    overflow: "auto",
+                    wordBreak: "break-all",
+                  }}
+                >
                   SVG Length: {activeGlyph.svg.length} chars
-                  <br/>
+                  <br />
                   Preview: {activeGlyph.svg.substring(0, 50)}...
                 </div>
               </>
@@ -677,7 +682,7 @@ export default function FontMaker() {
 
         <div
           style={{
-            flex: "0 0 220px",
+            flex: "0 0 260px",
             background: "#111827",
             color: "white",
             margin: "0 16px 16px 16px",
@@ -688,19 +693,23 @@ export default function FontMaker() {
           }}
         >
           <div style={{ marginBottom: 8, fontWeight: 700 }}>Live Preview</div>
-          <div
-            style={{
-              border: "1px solid #1f2937",
-              borderRadius: 6,
-              padding: 10,
-              minHeight: 120,
-              overflow: "auto",
-              background: "#0b1220",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {previewGlyphElements}
+          <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <input
+                type="checkbox"
+                checked={showSpacingDebug}
+                onChange={e => setShowSpacingDebug(e.target.checked)}
+              />
+              Show Spacing Debug
+            </label>
+            <select value={previewMode} onChange={e => setPreviewMode(e.target.value as any)}>
+              <option value="typeset">Typeset mode</option>
+              <option value="monospace">Monospace enforcement</option>
+              <option value="grid">Grid-aligned mode</option>
+              <option value="bounding">Bounding box mode</option>
+            </select>
           </div>
+          {previewGlyphElements}
         </div>
       </div>
     </div>
