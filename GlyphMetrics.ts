@@ -38,12 +38,55 @@ export function extractPathData(svg: string): string[] {
 }
 
 export function buildPathFromData(ds: string[]) {
-  const base = new opentype.Path();
-  ds.forEach(d => {
-    const p = opentype.Path.fromSVG(d);
-    p.commands.forEach(cmd => base.commands.push({ ...cmd } as any));
+  const path = new opentype.Path();
+  
+  ds.forEach(pathData => {
+    // Parse SVG path data - handle the M,h,v,z format from auto-trace
+    let currentX = 0;
+    let currentY = 0;
+    
+    const commands = pathData.match(/[MmLlHhVvZz][^MmLlHhVvZz]*/g) || [];
+    
+    commands.forEach(cmd => {
+      const type = cmd[0];
+      const args = cmd.slice(1).trim().split(/[\s,]+/).map(Number).filter(n => !isNaN(n));
+      
+      switch (type) {
+        case 'M': // absolute moveTo
+          if (args.length >= 2) {
+            currentX = args[0];
+            currentY = args[1];
+            path.moveTo(currentX, currentY);
+          }
+          break;
+        case 'h': // relative horizontal line
+          if (args.length >= 1) {
+            currentX += args[0];
+            path.lineTo(currentX, currentY);
+          }
+          break;
+        case 'v': // relative vertical line
+          if (args.length >= 1) {
+            currentY += args[0];
+            path.lineTo(currentX, currentY);
+          }
+          break;
+        case 'L': // absolute lineTo
+          if (args.length >= 2) {
+            currentX = args[0];
+            currentY = args[1];
+            path.lineTo(currentX, currentY);
+          }
+          break;
+        case 'Z':
+        case 'z':
+          path.close();
+          break;
+      }
+    });
   });
-  return base;
+  
+  return path;
 }
 
 export function transformPath(

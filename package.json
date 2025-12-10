@@ -33,6 +33,7 @@
     "ttf2woff2": "^5.0.0"
   },
   "devDependencies": {
+    "@types/potrace": "^2.1.5",
     "@types/react": "^18.3.27",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.7.0",

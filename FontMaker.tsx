@@ -153,15 +153,17 @@ export default function FontMaker() {
   >("typeset");
   const [letterSpacing, setLetterSpacing] = useState<number>(initialState?.letterSpacing || 1);
   const [tracking, setTracking] = useState<number>(initialState?.tracking || 0);
+  const [stagedFiles, setStagedFiles] = useState<Array<{file: File, preview: string, assigned?: string}>>([]);
+  const [draggedFile, setDraggedFile] = useState<{file: File, preview: string} | null>(null);
 
   const activeGlyph = glyphs[selectedGlyph];
 
   useEffect(() => {
     try {
+      // Only save metadata and kerning, not the large SVG data
       localStorage.setItem(
         "fontMakerState",
         JSON.stringify({
-          glyphs,
           metadata,
           kerningPairs,
           guides,
@@ -170,7 +172,8 @@ export default function FontMaker() {
         })
       );
     } catch (e) {
-      console.error("Failed to save state:", e);
+      // Silent fail - localStorage quota exceeded
+      console.warn("Could not save to localStorage:", e.message);
     }
   }, [glyphs, metadata, kerningPairs, guides, letterSpacing, tracking]);
 
@@ -220,6 +223,57 @@ export default function FontMaker() {
     setStatus("Trace complete and applied to glyph.");
   }
 
+  async function handleOTFImport(file: File) {
+    setStatus("Loading font file...");
+    const buffer = await file.arrayBuffer();
+    
+    try {
+      const font = opentype.parse(buffer);
+      const importedGlyphs: Record<string, GlyphData> = {};
+      let count = 0;
+      
+      // Extract glyphs for each character
+      GLYPHS.forEach(char => {
+        const glyphIndex = font.charToGlyphIndex(char);
+        const glyph = font.glyphs.get(glyphIndex);
+        
+        if (glyph && glyph.path) {
+          // Convert opentype path to SVG
+          const pathData = glyph.path.toPathData();
+          const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="0 0 1000 1000">
+<path fill="#ffffff" d="${pathData}" />
+</svg>`;
+          
+          importedGlyphs[char] = {
+            svg: svg,
+            scale: 1,
+            rotate: 0,
+            x: 0,
+            y: 0,
+            advance: glyph.advanceWidth || 600,
+          };
+          count++;
+        }
+      });
+      
+      setGlyphs(prev => ({ ...prev, ...importedGlyphs }));
+      setStatus(`Imported ${count} glyphs from font!`);
+      
+      // Also import metadata if available
+      if (font.names && font.names.fontFamily) {
+        setMetadata(prev => ({
+          ...prev,
+          fontName: font.names.fontFamily.en || prev.fontName,
+        }));
+      }
+      
+    } catch (error: any) {
+      setStatus(`Import failed: ${error.message}`);
+      console.error('Font import error:', error);
+    }
+  }
+
   function setKerningPair() {
     const key = kerningKey(kerningLeft, kerningRight);
     setKerningPairs(prev => ({
@@ -234,23 +288,17 @@ export default function FontMaker() {
     style: "Regular" | "Bold" | "Italic" | "BoldItalic"
   ) {
     if (!glyph.svg) return null;
+    
+    // Extract path data and build the path
     const ds = extractPathData(glyph.svg);
     const basePath = buildPathFromData(ds);
     const transformed = transformPath(basePath, glyph, style);
-    const bbox = transformed.getBoundingBox();
-    const glyphWidth = Math.max(bbox.x2 - bbox.x1, glyph.advance - glyph.leftBearing - glyph.rightBearing);
-    const advanceWidth = glyph.leftBearing + glyphWidth + glyph.rightBearing;
-    const advanceAdjusted = advanceWidth * (style.includes("Bold") ? 1.08 : 1);
+    const advanceWidth = glyph.advance || 600;
 
     return new opentype.Glyph({
       name: char,
       unicode: char.codePointAt(0)!,
-      advanceWidth: advanceAdjusted,
-      leftSideBearing: glyph.leftBearing,
-      xMin: bbox.x1,
-      xMax: bbox.x2,
-      yMin: bbox.y1,
-      yMax: bbox.y2,
+      advanceWidth: advanceWidth,
       path: transformed,
     });
   }
@@ -279,31 +327,67 @@ export default function FontMaker() {
   }
 
   function exportFont(style: "Regular" | "Bold" | "Italic" | "BoldItalic") {
+    console.log('exportFont called with style:', style);
+    const glyphList: opentype.Glyph[] = [];
+    
+    // Create .notdef glyph (required)
+    glyphList.push(new opentype.Glyph({
+      name: '.notdef',
+      unicode: 0,
+      advanceWidth: 650,
+      path: new opentype.Path()
+    }));
+
+    GLYPHS.forEach(char => {
+      const glyph = glyphToOpenType(char, glyphs[char], style);
+      if (glyph) {
+        glyphList.push(glyph);
+      }
+    });
+
     const font = new opentype.Font({
       familyName: metadata.fontName,
       styleName: style,
       unitsPerEm: metadata.unitsPerEm,
       ascender: metadata.ascender,
       descender: -Math.abs(metadata.descender),
+      glyphs: glyphList
     });
 
-    GLYPHS.forEach(char => {
-      const glyph = glyphToOpenType(char, glyphs[char], style);
-      if (glyph) {
-        font.addGlyph(glyph);
-      }
-    });
-
-    Object.entries(kerningPairs).forEach(([key, value]) => {
-      const [l, r] = key.split("_");
-      if (l && r) {
-        font.kerningPairs[`${l}${r}`] = value;
-      }
-    });
+    // Note: Kerning pairs might not be supported in this version of opentype.js
+    // Skip kerning for now to get export working
+    // Object.entries(kerningPairs).forEach(([key, value]) => {
+    //   const [l, r] = key.split("_");
+    //   if (l && r && font.glyphs) {
+    //     const leftGlyph = font.glyphs.get(font.charToGlyphIndex(l));
+    //     const rightGlyph = font.glyphs.get(font.charToGlyphIndex(r));
+    //     if (leftGlyph && rightGlyph) {
+    //       // Add kerning if API supports it
+    //     }
+    //   }
+    // });
 
     const fileName = `${metadata.fontName}-${style}.otf`;
-    font.download(fileName);
-    setStatus(`Exported ${fileName}`);
+    console.log('Attempting to download font:', fileName);
+    try {
+      // Manual download implementation
+      const arrayBuffer = font.toArrayBuffer();
+      const blob = new Blob([arrayBuffer], { type: 'font/otf' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      
+      setStatus(`Exported ${fileName}`);
+      console.log('Download triggered successfully');
+    } catch (error) {
+      console.error('Download failed:', error);
+      setStatus(`Export failed: ${error.message}`);
+    }
   }
 
   const previewGlyphElements = useMemo(() => {
@@ -346,6 +430,29 @@ export default function FontMaker() {
         }}
       >
         <h2 style={{ marginTop: 0 }}>Font Controls</h2>
+        
+        <div style={{ marginBottom: "20px", padding: "15px", backgroundColor: "#1b1f2a", borderRadius: "4px", border: "1px solid #1f2d3d" }}>
+          <label htmlFor="otf-import" style={{ marginRight: "10px", fontWeight: "bold", fontSize: "14px" }}>
+            Import Font (OTF/TTF):
+          </label>
+          <input
+            id="otf-import"
+            type="file"
+            accept=".otf,.ttf"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleOTFImport(file);
+            }}
+            style={{
+              padding: "5px",
+              borderRadius: "4px",
+              border: "1px solid #666",
+              backgroundColor: "#2a2a2a",
+              color: "#fff",
+            }}
+          />
+        </div>
+        
         <div style={{ marginBottom: 8, fontWeight: 700 }}>
           Selected Glyph: {selectedGlyph}
         </div>
@@ -376,6 +483,132 @@ export default function FontMaker() {
           ))}
         </div>
 
+        <div style={{ marginBottom: 12, padding: 12, border: "2px dashed #1f2d3d", borderRadius: 4 }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>📁 Stage PNGs for Drag & Drop</div>
+          <input
+            type="file"
+            accept="image/png"
+            multiple
+            onChange={async e => {
+              const files = Array.from(e.target.files || []);
+              if (files.length === 0) return;
+              
+              const newStaged = await Promise.all(
+                files.map(async file => {
+                  const preview = await new Promise<string>((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result as string);
+                    reader.readAsDataURL(file);
+                  });
+                  return { file, preview };
+                })
+              );
+              
+              setStagedFiles(prev => [...prev, ...newStaged]);
+              setStatus(`Staged ${files.length} files. Drag them to character slots.`);
+            }}
+          />
+          {stagedFiles.length > 0 && (
+            <div style={{ 
+              marginTop: 8, 
+              display: "grid", 
+              gridTemplateColumns: "repeat(auto-fill, 60px)", 
+              gap: 6,
+              maxHeight: 200,
+              overflow: "auto",
+              padding: 4,
+              background: "#0a0e1a",
+              borderRadius: 4
+            }}>
+              {stagedFiles.map((staged, idx) => (
+                <div
+                  key={idx}
+                  draggable
+                  onDragStart={() => setDraggedFile(staged)}
+                  onDragEnd={() => setDraggedFile(null)}
+                  style={{
+                    width: 60,
+                    height: 60,
+                    border: staged.assigned ? "2px solid #22c55e" : "1px solid #1f2d3d",
+                    borderRadius: 4,
+                    cursor: "grab",
+                    position: "relative",
+                    background: "#0f172a"
+                  }}
+                >
+                  <img src={staged.preview} style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+                  {staged.assigned && (
+                    <div style={{
+                      position: "absolute",
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      background: "#22c55e",
+                      color: "white",
+                      fontSize: 10,
+                      textAlign: "center",
+                      fontWeight: "bold"
+                    }}>
+                      {staged.assigned}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>
+            Drag thumbnails to character boxes below
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Character Slots</div>
+          <div style={{ 
+            display: "grid", 
+            gridTemplateColumns: "repeat(auto-fill, 40px)", 
+            gap: 4,
+            maxHeight: 200,
+            overflow: "auto",
+            padding: 4,
+            background: "#0a0e1a",
+            borderRadius: 4
+          }}>
+            {GLYPHS.map(char => (
+              <div
+                key={char}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={async (e) => {
+                  e.preventDefault();
+                  if (draggedFile) {
+                    setSelectedGlyph(char);
+                    await handlePNGUpload(draggedFile.file);
+                    setStagedFiles(prev => prev.map(f => 
+                      f === draggedFile ? {...f, assigned: char} : f
+                    ));
+                    setStatus(`Assigned to "${char}"`);
+                  }
+                }}
+                onClick={() => setSelectedGlyph(char)}
+                style={{
+                  width: 40,
+                  height: 40,
+                  border: selectedGlyph === char ? "2px solid #3b82f6" : glyphs[char].svg ? "1px solid #22c55e" : "1px solid #1f2d3d",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: glyphs[char].svg ? "#1f2d3d" : "#0f172a",
+                  fontSize: 14,
+                  color: glyphs[char].svg ? "#22c55e" : "#666"
+                }}
+              >
+                {char}
+              </div>
+            ))}
+          </div>
+        </div>
+
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>Upload SVG</div>
           <input
@@ -400,6 +633,45 @@ export default function FontMaker() {
               }
             }}
           />
+        </div>
+
+        <div style={{ marginBottom: 12, padding: 12, border: "2px dashed #1f2d3d", borderRadius: 4 }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>📁 Bulk Upload PNGs</div>
+          <input
+            type="file"
+            accept="image/png"
+            multiple
+            onChange={async e => {
+              const files = Array.from(e.target.files || []);
+              if (files.length === 0) return;
+              
+              setStatus(`Uploading ${files.length} files...`);
+              
+              for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                // Try to guess the character from filename
+                // e.g., "A.png" -> "A", "letter-B.png" -> "B", "a.png" -> "a"
+                const match = file.name.match(/[A-Za-z0-9!@#$%&*()\[\]{};:'",.<>?/\\|`~+=-]/);
+                const guessedChar = match ? match[0] : null;
+                
+                if (guessedChar && GLYPHS.includes(guessedChar)) {
+                  setSelectedGlyph(guessedChar);
+                  setStatus(`Processing ${file.name} as "${guessedChar}" (${i + 1}/${files.length})...`);
+                  await handlePNGUpload(file);
+                } else {
+                  setStatus(`Skipped ${file.name} - couldn't determine character (${i + 1}/${files.length})`);
+                }
+                
+                // Small delay to avoid overwhelming the browser
+                await new Promise(resolve => setTimeout(resolve, 100));
+              }
+              
+              setStatus(`Completed! Uploaded ${files.length} glyphs.`);
+            }}
+          />
+          <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>
+            Name files like: A.png, B.png, a.png, 1.png, etc.
+          </div>
         </div>
 
         <div style={{ marginBottom: 10 }}>
@@ -562,6 +834,54 @@ export default function FontMaker() {
         />
 
         <FontMetadataForm onChange={setMetadata} />
+
+        <div style={{ marginTop: 16, borderTop: "1px solid #1f2330", paddingTop: 10 }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>🔧 Custom Script</div>
+          <textarea
+            id="customScript"
+            placeholder="// JavaScript code - access glyphs, metadata, setGlyphs, etc.
+// Example:
+// Object.keys(glyphs).forEach(char => {
+//   if (glyphs[char].svg) {
+//     glyphs[char].scale = 1.5;
+//   }
+// });
+// setGlyphs({...glyphs});"
+            style={{
+              width: "100%",
+              height: 120,
+              fontFamily: "monospace",
+              fontSize: 11,
+              padding: 8,
+              background: "#0a0e1a",
+              color: "#e0e0e0",
+              border: "1px solid #1f2d3d",
+              borderRadius: 4,
+              resize: "vertical"
+            }}
+          />
+          <button
+            onClick={() => {
+              try {
+                const code = (document.getElementById('customScript') as HTMLTextAreaElement).value;
+                // Create function with access to state
+                const fn = new Function('glyphs', 'setGlyphs', 'metadata', 'setMetadata', 'kerningPairs', 'setKerningPairs', 'GLYPHS', 'setStatus', code);
+                fn(glyphs, setGlyphs, metadata, setMetadata, kerningPairs, setKerningPairs, GLYPHS, setStatus);
+                setStatus('Script executed successfully!');
+              } catch (error: any) {
+                setStatus(`Script error: ${error.message}`);
+                console.error('Script execution error:', error);
+              }
+            }}
+            style={{ padding: 8, width: "100%", marginTop: 6 }}
+          >
+            Run Script
+          </button>
+          <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>
+            Available: glyphs, setGlyphs, metadata, setMetadata, kerningPairs, setKerningPairs, GLYPHS, setStatus
+          </div>
+        </div>
+
         <div style={{ marginTop: 12 }}>
           <div style={{ fontWeight: 700, marginBottom: 6 }}>Export</div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>

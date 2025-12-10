@@ -106,7 +106,7 @@ export default function FontSpacingTools({
         <div>Global Tracking ({tracking.toFixed(0)} units)</div>
         <input
           type="range"
-          min={-200}
+          min={-500}
           max={200}
           step={1}
           value={tracking}
