@@ -224,40 +224,66 @@ export default function FontMaker() {
   }
 
   async function handleOTFImport(file: File) {
-    setStatus("Loading font file...");
-    const buffer = await file.arrayBuffer();
-    
     try {
+      setStatus("Loading font file...");
+      const buffer = await file.arrayBuffer();
+      
+      console.log('Parsing font buffer, size:', buffer.byteLength);
       const font = opentype.parse(buffer);
+      console.log('Font parsed:', font);
+      
       const importedGlyphs: Record<string, GlyphData> = {};
       let count = 0;
       
       // Extract glyphs for each character
       GLYPHS.forEach(char => {
-        const glyphIndex = font.charToGlyphIndex(char);
-        const glyph = font.glyphs.get(glyphIndex);
-        
-        if (glyph && glyph.path) {
-          // Convert opentype path to SVG
-          const pathData = glyph.path.toPathData();
-          const svg = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="0 0 1000 1000">
+        try {
+          const glyphIndex = font.charToGlyphIndex(char);
+          const glyph = font.glyphs.get(glyphIndex);
+          
+          console.log(`Character '${char}': glyphIndex=${glyphIndex}, hasGlyph=${!!glyph}, hasPath=${!!glyph?.path}`);
+          
+          if (glyph && glyph.path) {
+            // Convert opentype path to SVG
+            const pathData = glyph.path.toPathData();
+            console.log(`  pathData length: ${pathData?.length || 0}`);
+            
+            if (!pathData || pathData.trim().length === 0) {
+              console.warn(`  Empty path data for '${char}'`);
+              return;
+            }
+            
+            const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="0 0 1000 1000" style="width: 100%; height: 100%;">
 <path fill="#ffffff" d="${pathData}" />
 </svg>`;
-          
-          importedGlyphs[char] = {
-            svg: svg,
-            scale: 1,
-            rotate: 0,
-            x: 0,
-            y: 0,
-            advance: glyph.advanceWidth || 600,
-          };
-          count++;
+            
+            importedGlyphs[char] = {
+              svg: svg,
+              scale: 1,
+              rotate: 0,
+              x: 0,
+              y: 0,
+              advance: glyph.advanceWidth || 600,
+              leftBearing: 100,
+              rightBearing: 100,
+            };
+            count++;
+            console.log(`  ✓ Imported '${char}'`);
+          }
+        } catch (charError: any) {
+          console.warn(`Failed to import glyph for '${char}':`, charError.message);
         }
       });
       
-      setGlyphs(prev => ({ ...prev, ...importedGlyphs }));
+      console.log('Total imported glyphs:', count);
+      console.log('Imported glyph keys:', Object.keys(importedGlyphs));
+      
+      setGlyphs(prev => {
+        const updated = { ...prev, ...importedGlyphs };
+        console.log('Updated glyphs state, total keys:', Object.keys(updated).length);
+        return updated;
+      });
       setStatus(`Imported ${count} glyphs from font!`);
       
       // Also import metadata if available
@@ -271,6 +297,7 @@ export default function FontMaker() {
     } catch (error: any) {
       setStatus(`Import failed: ${error.message}`);
       console.error('Font import error:', error);
+      alert(`Import failed: ${error.message}`);
     }
   }
 
