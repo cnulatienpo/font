@@ -253,9 +253,15 @@ export default function FontMaker() {
               return;
             }
             
+            // Font coordinates are Y-up, SVG is Y-down, so we need to flip
+            // Get the font's unitsPerEm to know the coordinate system height
+            const unitsPerEm = font.unitsPerEm || 1000;
+            
             const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="0 0 1000 1000" style="width: 100%; height: 100%;">
+<g transform="scale(1, -1) translate(0, -${unitsPerEm})">
 <path fill="#ffffff" d="${pathData}" />
+</g>
 </svg>`;
             
             importedGlyphs[char] = {
@@ -863,7 +869,123 @@ export default function FontMaker() {
         <FontMetadataForm onChange={setMetadata} />
 
         <div style={{ marginTop: 16, borderTop: "1px solid #1f2330", paddingTop: 10 }}>
-          <div style={{ fontWeight: 700, marginBottom: 6 }}>🔧 Custom Script</div>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>🔧 Normalize All Glyphs</div>
+          <button
+            onClick={() => {
+              try {
+                setStatus('Normalizing all glyphs...');
+                
+                // Step 1: Calculate heights for all glyphs with SVGs
+                const heights: number[] = [];
+                Object.keys(glyphs).forEach(char => {
+                  const g = glyphs[char];
+                  if (g.svg) {
+                    // Parse viewBox to get height
+                    const match = g.svg.match(/viewBox="[\d\s.-]+\s+([\d.]+)"/);
+                    if (match) {
+                      heights.push(parseFloat(match[1]));
+                    }
+                  }
+                });
+                
+                // Find median height
+                heights.sort((a, b) => a - b);
+                const medianHeight = heights[Math.floor(heights.length / 2)] || 1000;
+                const targetHeight = 800; // Target uniform height
+                
+                setStatus(`Median height: ${medianHeight.toFixed(0)}px, normalizing to ${targetHeight}px`);
+                
+                // Step 2: Normalize each glyph
+                const updated = { ...glyphs };
+                Object.keys(updated).forEach(char => {
+                  const g = updated[char];
+                  if (g.svg) {
+                    const match = g.svg.match(/viewBox="[\d\s.-]+\s+([\d.]+)"/);
+                    if (match) {
+                      const currentHeight = parseFloat(match[1]);
+                      const scaleFactor = targetHeight / currentHeight;
+                      
+                      // Apply uniform scale
+                      g.scale = scaleFactor;
+                      
+                      // Set advance width based on character type
+                      const isUpper = /[A-Z]/.test(char);
+                      const isLower = /[a-z]/.test(char);
+                      const isDigit = /[0-9]/.test(char);
+                      const isPunctuation = /[.,!?:;'"]/.test(char);
+                      const isSpace = char === ' ';
+                      const isWide = /[mwMW]/.test(char);
+                      const isNarrow = /[ij!l|1.,':;]/.test(char);
+                      
+                      if (isSpace) {
+                        g.advance = 300;
+                      } else if (isWide) {
+                        g.advance = 900;
+                      } else if (isNarrow) {
+                        g.advance = 350;
+                      } else if (isUpper) {
+                        g.advance = 700;
+                      } else if (isLower) {
+                        g.advance = 600;
+                      } else if (isDigit) {
+                        g.advance = 600;
+                      } else if (isPunctuation) {
+                        g.advance = 400;
+                      } else {
+                        g.advance = 600;
+                      }
+                      
+                      // Don't modify positioning - keep existing x/y/rotation
+                      // Just reset bearings
+                      g.leftBearing = 50;
+                      g.rightBearing = 50;
+                    }
+                  }
+                });
+                
+                setGlyphs(updated);
+                
+                // Step 3: Add common kerning pairs
+                const commonKerns: Record<string, number> = {};
+                
+                // Uppercase kerning
+                ['AV', 'AW', 'AY', 'AT', 'AO', 'TA', 'TO', 'TY', 'VA', 'WA', 'YA', 'Yo'].forEach(pair => {
+                  commonKerns[pair[0] + '_' + pair[1]] = -80;
+                });
+                
+                // Lowercase kerning
+                ['av', 'aw', 'ay', 'we', 'wo', 'ya', 'yo'].forEach(pair => {
+                  commonKerns[pair[0] + '_' + pair[1]] = -50;
+                });
+                
+                // Punctuation
+                ['.A', '.T', '.V', '.W', '.Y', ',A', ',T', ',V', ',W', ',Y'].forEach(pair => {
+                  commonKerns[pair[0] + '_' + pair[1]] = -60;
+                });
+                
+                setKerningPairs(prev => ({ ...prev, ...commonKerns }));
+                setStatus(`✓ Normalized ${Object.keys(updated).filter(k => updated[k].svg).length} glyphs and added ${Object.keys(commonKerns).length} kerning pairs!`);
+              } catch (error: any) {
+                setStatus(`Normalization error: ${error.message}`);
+                console.error('Normalization error:', error);
+              }
+            }}
+            style={{
+              padding: "10px 20px",
+              backgroundColor: "#16a34a",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer",
+              fontWeight: "bold",
+              width: "100%",
+              marginBottom: "10px"
+            }}
+          >
+            ✨ Normalize All Glyphs
+          </button>
+          
+          <div style={{ fontWeight: 700, marginBottom: 6, marginTop: 16 }}>Custom Script</div>
           <textarea
             id="customScript"
             placeholder="// JavaScript code - access glyphs, metadata, setGlyphs, etc.
